@@ -11,15 +11,56 @@ import pqs
 global opts
 
 class Normalizer (object):
+    '''A class to normalize values against a target range (0, t_max).  The
+    highest value seen will always == t_max, and other values will be
+    adjusted accordingly.  The following example illustrates this
+    behavior::
+
+        >>> N = Normalizer()
+        >>> N(100)
+        100
+        >>> N(50)
+        50
+        >>> N(200)
+        100
+        >>> N(50)
+        25
+
+    Note that the default configuration uses t_max=100, but you can change
+    this when you create a Normalizer object.'''
+
     def __init__ (self, t_max=100, v_max=0):
+        '''Parameters:
+        
+        - t_max -- maximum value of target range.
+        - v_max -- initialize largest input value.
+
+        The value of v_max will change if you call the object with v >
+        v_max.'''
+
         self.t_max = t_max
         self.v_max = float(v_max)
 
     def __call__(self, v):
+        '''Normalize a value v.'''
         if v > self.v_max:
             self.v_max = float(v)
 
         return int((v/self.v_max) * self.t_max)
+
+class Hoststats (object):
+    def __init__ (self, opts):
+        self.opts = opts
+        self.parser = pqs.Parser()
+        self.parser.addchars(('[',']'))
+
+    def curses_entry(self, stdscr):
+        self.winX, self.winY = stdscr.getmaxyx()
+        self.centerY = int(float(winY)/2)
+
+    def _init_colors(self):
+        curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
+        curses.init_pair(2, curses.COLOR_CYAN, curses.COLOR_BLACK)
 
 def parse_args():
     p = optparse.OptionParser()
