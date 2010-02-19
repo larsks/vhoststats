@@ -5,6 +5,8 @@ import sys
 import time
 import curses
 import optparse
+import signal
+import errno
 
 import pqs
 
@@ -49,42 +51,157 @@ class Normalizer (object):
         return int((v/self.v_max) * self.t_max)
 
 class Hoststats (object):
-    def __init__ (self, opts):
-        self.opts = opts
+    def __init__ (self,
+            src=sys.stdin,
+            vhost_field=0,
+            time_field=4,
+            size_field=7,
+            window_size=300,
+            maxhostlen=0,
+            maxcountlen=10):
+
+        if hasattr(src, 'readline'):
+            self.src = src
+        else:
+            self.src = open(src)
+
+        self.vhost_field= int(vhost_field)
+        self.time_field = int(time_field)
+        self.size_field = int(size_field)
+        self.window_size = int(window_size)
+        self.maxhostlen= int(maxhostlen)
+        self.maxcountlen=10
+
         self.parser = pqs.Parser()
         self.parser.addchars(('[',']'))
 
     def curses_entry(self, stdscr):
-        self.winX, self.winY = stdscr.getmaxyx()
-        self.centerY = int(float(winY)/2)
+        self.stdscr = stdscr
+        self._init_curses()
+
+        self._loop()
+
+    def _sigwinch_handler(self, sig, frame):
+        curses.endwin()
+        self.stdscr.refresh()
+        self._init_curses()
+
+    def _init_curses(self):
+        self.winY, self.winX = self.stdscr.getmaxyx()
+        self.centerY = int(float(self.winY)/2)
+        self._init_colors()
 
     def _init_colors(self):
         curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
         curses.init_pair(2, curses.COLOR_CYAN, curses.COLOR_BLACK)
+
+    def _init_loop_vars(self):
+        self.stack = []
+        self.requests = 0
+        self.hosts = set()
+        self.sorted_hosts = []
+        self.curmaxhostlen = 0
+
+        self.bnorm = Normalizer()
+        self.rnorm = Normalizer()
+
+    def _init_signals(self):
+        signal.signal(signal.SIGWINCH, self._sigwinch_handler)
+
+    def _loop(self):
+        self._init_loop_vars()
+        self._init_signals()
+
+        while True:
+            try:
+                line = self.src.readline()
+                if not line:
+                    break
+            except IOError, detail:
+                if detail.errno == errno.EINTR:
+                    continue
+                raise
+
+            try:
+                self._load(line)
+            except (IndexError, ValueError), detail:
+                self.errmsg = str(detail)
+                continue
+
+            self._update_totals()
+            self._limit_hosts()
+            self._update_screen()
+
+    def _limit_hosts(self):
+        self.sorted_hosts = list(reversed(sorted(self.hosts,
+            cmp=lambda x,y: cmp(self.totals.get(x, {'b':0})['b'],
+                self.totals.get(y, {'b':0})['b']))))
+
+        if len(self.sorted_hosts) >= self.centerY:
+            self.sorted_hosts = self.sorted_hosts[:self.centerY-3]
+
+    def _update_screen(self):
+        hlen = self.maxhostlen and self.maxhostlen or self.curmaxhostlen
+        clen = self.maxcountlen
+
+        label = '%%-%ds [%%-%dd] ' % (hlen, clen)
+
+        self.stdscr.erase()
+        self.stdscr.addstr(0,0,'HOSTS: %d [%d] REQUESTS: %d TOPHOST: %s MAXHOSTLEN: %d CY: %d' %
+                (len(self.hosts), len(self.sorted_hosts), self.requests, self.sorted_hosts[0],
+                    self.curmaxhostlen, self.centerY))
+
+        for host in self.sorted_hosts:
+            self.stdscr.addstr(1,0, label % ((host + ' '*hlen)[:hlen], self.totals.get(host,
+                {'b':0,'r':0})['b']))
+        self.stdscr.refresh()
+
+    def _load(self, line):
+        entry = [x[1] for x in self.parser.parse(line)]
+
+        now = time.mktime(time.strptime(
+                entry[self.time_field].split()[0],'%d/%b/%Y:%H:%M:%S'))
+
+        self.curmaxhostlen = max(self.curmaxhostlen,
+                len(entry[self.vhost_field]))
+
+        self.stack.append((now,
+            entry[self.vhost_field],
+            int(entry[self.size_field])))
+
+        self.requests += 1
+
+    def _update_totals(self):
+        newstack = []
+        self.totals = {}
+
+        now = self.stack[-1][0]
+
+        for when, vhost, bytes in self.stack:
+            self.hosts.add(vhost)
+            if (now-when) < self.window_size:
+                self.totals.setdefault(vhost, { 'r': 0, 'b': 0 })
+                self.totals[vhost]['r'] += 1
+                self.totals[vhost]['b'] += bytes
+                newstack.append((when, vhost, bytes))
+
+        self.stack = newstack
 
 def parse_args():
     p = optparse.OptionParser()
     p.add_option('-v', '--vhost-field', default='0')
     p.add_option('-t', '--time-field',  default='4')
     p.add_option('-s', '--size-field',  default='7')
-    p.add_option('-w', '--win-size', default='300')
+    p.add_option('-w', '--window-size', default='300')
     return p.parse_args()
 
 def genplot(stdscr):
-    p = pqs.Parser()
-    p.addchars(('[',']'))
-
     totals = {}
     stack = []
     wsize       = int(opts.win_size)
     maxhostlen  = 20
     numlen      = 10
     padding     = 6
-
-    winY,winX = stdscr.getmaxyx()
-    centerY = int(float(winY)/2)
-    curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
-    curses.init_pair(2, curses.COLOR_CYAN, curses.COLOR_BLACK)
 
     rnorm = Normalizer(t_max = (winX-maxhostlen-numlen-padding)-2)
     bnorm = Normalizer(t_max = (winX-maxhostlen-numlen-padding)-2)
@@ -95,43 +212,6 @@ def genplot(stdscr):
         line = sys.stdin.readline()
         if not line:
             break
-
-        try:
-            entry = [x[1] for x in p.parse(line)]
-
-            f_vhost = int(opts.vhost_field)
-            f_size = int(opts.size_field)
-            f_time = int(opts.time_field)
-
-            if not entry[f_size].isdigit():
-                continue
-
-            now = time.mktime(time.strptime(
-                    entry[f_time].split()[0],'%d/%b/%Y:%H:%M:%S'))
-            stack.append((now,
-                entry[f_vhost],
-                int(entry[f_size])))
-        except IndexError:
-            continue
-
-        newstack = []
-        totals = {}
-        for when, vhost, bytes in stack:
-            hosts.add(vhost)
-            if (now-when) < wsize:
-                totals.setdefault(vhost, { 'r': 0, 'b': 0 })
-                totals[vhost]['r'] += 1
-                totals[vhost]['b'] += bytes
-                newstack.append((when, vhost, bytes))
-
-        stack = newstack
-
-        s_hosts = list(reversed(sorted(hosts,
-            cmp=lambda x,y: cmp(totals.get(x, {'b':0})['b'],
-                totals.get(y, {'b':0})['b']))))
-
-        if len(s_hosts) >= centerY:
-            s_hosts = s_hosts[:centerY-3]
 
         hosty = centerY + len(s_hosts) - 2
 
@@ -163,10 +243,16 @@ def genplot(stdscr):
         stdscr.refresh()
 
 def main():
-    global opts
     opts, args = parse_args()
+    app = Hoststats(
+            vhost_field = opts.vhost_field,
+            time_field = opts.time_field,
+            size_field = opts.size_field,
+            window_size = opts.window_size,
+            maxhostlen = 20
+            )
 
-    curses.wrapper(genplot)
+    curses.wrapper(app.curses_entry)
 
 if __name__ == '__main__':
     main()
