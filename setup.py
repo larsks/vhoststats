@@ -11,6 +11,7 @@ setup(name='vhoststats',
         author='Lars Kellogg-Stedman',
         author_email='lars@oddbit.com',
         packages=['vhoststats'],
+        scripts=['scripts/vhoststats'],
         install_requires=['pqs'],
         )
 
