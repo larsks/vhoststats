@@ -58,7 +58,8 @@ class Hoststats (object):
             size_field=7,
             window_size=300,
             maxhostlen=0,
-            maxcountlen=10):
+            maxcountlen=10,
+            sortkey='b'):
 
         if hasattr(src, 'readline'):
             self.src = src
@@ -71,6 +72,7 @@ class Hoststats (object):
         self.window_size = int(window_size)
         self.maxhostlen= int(maxhostlen)
         self.maxcountlen=10
+        self.sortkey = sortkey.lower()
 
         self.parser = pqs.Parser()
         self.parser.addchars(('[',']'))
@@ -93,7 +95,8 @@ class Hoststats (object):
 
     def _init_colors(self):
         curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
-        curses.init_pair(2, curses.COLOR_CYAN, curses.COLOR_BLACK)
+        curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
+        curses.init_pair(3, curses.COLOR_CYAN, curses.COLOR_BLACK)
 
     def _init_loop_vars(self):
         self.stack = []
@@ -134,8 +137,8 @@ class Hoststats (object):
 
     def _limit_hosts(self):
         self.sorted_hosts = list(reversed(sorted(self.hosts,
-            cmp=lambda x,y: cmp(self.totals.get(x, {'b':0})['b'],
-                self.totals.get(y, {'b':0})['b']))))
+            cmp=lambda x,y: cmp(self.totals.get(x, {'r':0,'b':0})[self.sortkey],
+                self.totals.get(y, {'r':0,'b':0})[self.sortkey]))))
 
         if len(self.sorted_hosts) >= self.centerY:
             self.sorted_hosts = self.sorted_hosts[:self.centerY-3]
@@ -144,28 +147,57 @@ class Hoststats (object):
         hlen = self.maxhostlen and self.maxhostlen or self.curmaxhostlen
         clen = self.maxcountlen
 
-        label = '%%-%ds [%%-%dd] ' % (hlen, clen)
+        label = '%%-%ds' % hlen
+        counter = '[%%s:%%-%dd] ' % clen
+        labellen = len(label % (' '*hlen))
+        counterlen = len(counter % ('B', 0))
+
+        self.bnorm.t_max = self.winX - labellen - counterlen - 4
+        self.rnorm.t_max = self.winX - labellen - counterlen - 4
 
         self.stdscr.erase()
-        self.stdscr.addstr(0,0,'HOSTS: %d [%d] REQUESTS: %d TOPHOST: %s MAXHOSTLEN: %d CY: %d' %
-                (len(self.hosts), len(self.sorted_hosts), self.requests, self.sorted_hosts[0],
-                    self.curmaxhostlen, self.centerY))
+        self.stdscr.addstr(0,0,'[%s] Hosts: %d [Displayed: %d] Requests: %d' %
+                (time.strftime('%Y/%m/%d %H:%M:%S',
+                    time.localtime(self.now)),
+                    len(self.hosts), len(self.sorted_hosts), self.requests))
+
+        hosty = self.centerY + len(self.sorted_hosts) - 1
 
         for host in self.sorted_hosts:
-            self.stdscr.addstr(1,0, label % ((host + ' '*hlen)[:hlen], self.totals.get(host,
-                {'b':0,'r':0})['b']))
+            bytes = self.totals.get(host, {'b':0,'r':0})['b']
+            requests = self.totals.get(host, {'b':0,'r':0})['r']
+
+            self.stdscr.addstr(hosty-1,0,
+                    label % ((host + ' '*hlen)[:hlen]),
+                    curses.color_pair(3))
+            self.stdscr.addstr(hosty-1,labellen+1,
+                    counter % ('R', requests))
+            self.stdscr.addstr(hosty-1, labellen+counterlen+2,
+                    '#'*self.rnorm(requests),
+                    curses.color_pair(1))
+
+            self.stdscr.addstr(hosty,0,
+                    label % (' '*hlen))
+            self.stdscr.addstr(hosty,labellen+1,
+                    counter % ('B', bytes))
+            self.stdscr.addstr(hosty, labellen+counterlen+2,
+                    '#'*self.bnorm(bytes),
+                    curses.color_pair(2))
+
+            hosty -= 2
+
         self.stdscr.refresh()
 
     def _load(self, line):
         entry = [x[1] for x in self.parser.parse(line)]
 
-        now = time.mktime(time.strptime(
+        self.now = time.mktime(time.strptime(
                 entry[self.time_field].split()[0],'%d/%b/%Y:%H:%M:%S'))
 
         self.curmaxhostlen = max(self.curmaxhostlen,
                 len(entry[self.vhost_field]))
 
-        self.stack.append((now,
+        self.stack.append((self.now,
             entry[self.vhost_field],
             int(entry[self.size_field])))
 
@@ -175,11 +207,9 @@ class Hoststats (object):
         newstack = []
         self.totals = {}
 
-        now = self.stack[-1][0]
-
         for when, vhost, bytes in self.stack:
             self.hosts.add(vhost)
-            if (now-when) < self.window_size:
+            if (self.now-when) < self.window_size:
                 self.totals.setdefault(vhost, { 'r': 0, 'b': 0 })
                 self.totals[vhost]['r'] += 1
                 self.totals[vhost]['b'] += bytes
@@ -193,6 +223,13 @@ def parse_args():
     p.add_option('-t', '--time-field',  default='4')
     p.add_option('-s', '--size-field',  default='7')
     p.add_option('-w', '--window-size', default='300')
+    p.add_option('-B', '--bytes', action='store_const', const='b',
+            dest='sortkey')
+    p.add_option('-R', '--requests', action='store_const', const='r',
+            dest='sortkey')
+
+    p.set_defaults(sortkey='b')
+
     return p.parse_args()
 
 def genplot(stdscr):
@@ -249,7 +286,8 @@ def main():
             time_field = opts.time_field,
             size_field = opts.size_field,
             window_size = opts.window_size,
-            maxhostlen = 20
+            maxhostlen = 20,
+            sortkey = opts.sortkey,
             )
 
     curses.wrapper(app.curses_entry)
