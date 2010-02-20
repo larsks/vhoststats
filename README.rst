@@ -27,6 +27,13 @@ The output might look something like this::
   www.google.com       [R:32        ]  #################################
                        [B:1566614   ]  ####################################
 
+Installation
+============
+
+*vhoststats* uses a standard python *setup.py* script, so::
+
+  python setup.py install
+
 Usage
 =====
 
@@ -72,8 +79,8 @@ number of requests (``--requests``, ``-R``).
 For more information
 ====================
 
-- The vhostats project page on github:
+- | The vhostats project page on github:
   | http://github.com/larsks/vhoststats/
-- My blog:
+- | My blog:
   | http://blog.oddbit.com/
 
